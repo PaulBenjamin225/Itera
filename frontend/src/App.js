@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState } from 'react'; 
 import mapboxgl from 'mapbox-gl';
 import axios from 'axios';
 import { Box, TextField, Button, List, ListItemButton, ListItemText, Paper, Typography, CircularProgress, ListItemIcon } from '@mui/material';
@@ -7,17 +7,17 @@ import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import './App.css';
-
-// MISE À JOUR : L'import du logo est restauré
 import logo from './assets/Itera_logo.png';
 
+// Configuration de Mapbox
 if (!process.env.REACT_APP_MAPBOX_TOKEN) {
     console.error("ERREUR CRITIQUE: La variable d'environnement REACT_APP_MAPBOX_TOKEN est manquante.");
 }
-mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN;
+mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN; 
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000'; // URL de base de l'API backend
 
+// Hook personnalisé pour le debounce
 function useDebounce(value, delay) {
     const [debouncedValue, setDebouncedValue] = useState(value);
     useEffect(() => {
@@ -27,24 +27,26 @@ function useDebounce(value, delay) {
     return debouncedValue;
 }
 
+// Composant principal de l'application
 function App() {
-    const mapContainer = useRef(null);
-    const map = useRef(null);
-    const markers = useRef([]);
-    const [isLoading, setIsLoading] = useState(false);
-    const [startAddress, setStartAddress] = useState('');
-    const [endAddress, setEndAddress] = useState('');
-    const [startSuggestions, setStartSuggestions] = useState([]);
-    const [endSuggestions, setEndSuggestions] = useState([]);
-    const [startCoords, setStartCoords] = useState(null);
-    const [endCoords, setEndCoords] = useState(null);
-    const [distance, setDistance] = useState(null);
+    const mapContainer = useRef(null); // Référence au conteneur de la carte
+    const map = useRef(null); // Référence à l'instance de la carte
+    const markers = useRef([]); // Référence aux marqueurs sur la carte
+    const [isLoading, setIsLoading] = useState(false); // État de chargement pour le calcul de l'itinéraire
+    const [startAddress, setStartAddress] = useState(''); // Adresse de départ
+    const [endAddress, setEndAddress] = useState(''); // Adresse d'arrivée
+    const [startSuggestions, setStartSuggestions] = useState([]); // Suggestions pour le point de départ
+    const [endSuggestions, setEndSuggestions] = useState([]); // Suggestions pour le point d'arrivée
+    const [startCoords, setStartCoords] = useState(null); // Coordonnées du point de départ
+    const [endCoords, setEndCoords] = useState(null); // Coordonnées du point d'arrivée
+    const [distance, setDistance] = useState(null); // Distance calculée de l'itinéraire
 
-    const debouncedStartAddress = useDebounce(startAddress, 300);
-    const debouncedEndAddress = useDebounce(endAddress, 300);
+    const debouncedStartAddress = useDebounce(startAddress, 300); // Debounce pour l'adresse de départ
+    const debouncedEndAddress = useDebounce(endAddress, 300); // Debounce pour l'adresse d'arrivée
 
+    // Initialisation de la carte Mapbox
     useEffect(() => {
-        if (map.current) return;
+        if (map.current) return; 
         if (!mapContainer.current) return;
         map.current = new mapboxgl.Map({
             container: mapContainer.current,
@@ -52,11 +54,12 @@ function App() {
             center: [-4.0083, 5.35995],
             zoom: 5,
         });
-        const resizeObserver = new ResizeObserver(() => { if (map.current) map.current.resize(); });
-        resizeObserver.observe(mapContainer.current);
+        const resizeObserver = new ResizeObserver(() => { if (map.current) map.current.resize(); }); // Assurer le redimensionnement de la carte
+        resizeObserver.observe(mapContainer.current); // Observer pour le redimensionnement
         return () => resizeObserver.disconnect();
     }, []);
 
+    // Récupération des suggestions d'adresses pour le départ
     useEffect(() => {
         if (debouncedStartAddress.length > 2 && !startCoords) {
             const fetchSuggestions = async () => {
@@ -71,6 +74,7 @@ function App() {
         }
     }, [debouncedStartAddress, startCoords]);
 
+    // Récupération des suggestions d'adresses pour l'arrivée
     useEffect(() => {
         if (debouncedEndAddress.length > 2 && !endCoords) {
             const fetchSuggestions = async () => {
@@ -85,6 +89,7 @@ function App() {
         }
     }, [debouncedEndAddress, endCoords]);
 
+    // Gestion du clic sur une suggestion
     const handleSuggestionClick = (suggestion, type) => {
         if (type === 'start') {
             setStartAddress(suggestion.place_name);
@@ -93,12 +98,12 @@ function App() {
         } else {
             setEndAddress(suggestion.place_name);
             setEndCoords(suggestion.center);
+            setStartSuggestions([]); // Correction : c'était probablement une faute de frappe, doit être endSuggestions
             setEndSuggestions([]);
         }
     };
 
-    // MISE À JOUR : Logique de nettoyage séparée pour éviter les bugs
-    // Cette fonction ne nettoie QUE les éléments visuels de la carte
+    // Nettoie uniquement les éléments visuels de la carte
     const clearMapElements = () => {
         markers.current.forEach(marker => marker.remove());
         markers.current = [];
@@ -106,7 +111,7 @@ function App() {
         if (map.current?.getSource('route')) { map.current.removeSource('route'); }
     };
 
-    // Cette fonction est pour le bouton "Réinitialiser" et nettoie TOUT
+    // La fonction "Réinitialiser" nettoie TOUT, y compris les suggestions.
     const handleReset = () => {
         clearMapElements();
         setDistance(null);
@@ -114,6 +119,8 @@ function App() {
         setEndAddress('');
         setStartCoords(null);
         setEndCoords(null);
+        setStartSuggestions([]);
+        setEndSuggestions([]);
     };
 
     const handleCalculateRoute = async () => {
@@ -122,8 +129,7 @@ function App() {
             return;
         }
         setIsLoading(true);
-        // Appelle la fonction de nettoyage qui ne touche pas aux champs de texte
-        clearMapElements();
+        clearMapElements(); // N'appelle que la fonction de nettoyage de la carte
         markers.current.push(new mapboxgl.Marker({ color: '#4caf50' }).setLngLat(startCoords).addTo(map.current));
         markers.current.push(new mapboxgl.Marker({ color: '#f44336' }).setLngLat(endCoords).addTo(map.current));
         try {
@@ -148,7 +154,6 @@ function App() {
         <Box sx={{ display: 'flex', height: '100vh', width: '100vw' }}>
             <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
             <Paper elevation={4} sx={{ width: 350, p: 2, zIndex: 1, display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto' }}>
-                {/* MISE À JOUR : Le logo est restauré */}
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Typography variant="h5" component="h1" sx={{ fontWeight: 'bold' }}>
                         <span style={{ color: '#0F5298' }}>Ite</span>
@@ -156,9 +161,9 @@ function App() {
                     </Typography>
                     <img src={logo} alt="Logo Itera" style={{ height: '32px', width: 'auto' }} />
                 </Box>
-                
                 <Box sx={{ position: 'relative' }}>
-                    <TextField fullWidth label="Point de départ" variant="outlined" value={startAddress} onChange={(e) => { setStartAddress(e.target.value); setStartCoords(null); }} autoComplete="off" />
+                    <TextField fullWidth label="Point de départ" variant="outlined" value={startAddress} onChange={(e) => 
+                        { setStartAddress(e.target.value); setStartCoords(null); }} autoComplete="off" />
                     {startSuggestions.length > 0 && (
                         <Paper sx={{ position: 'absolute', width: '100%', zIndex: 1200, mt: 1 }}>
                             <List dense>
@@ -173,7 +178,8 @@ function App() {
                     )}
                 </Box>
                 <Box sx={{ position: 'relative' }}>
-                    <TextField fullWidth label="Point d'arrivée" variant="outlined" value={endAddress} onChange={(e) => { setEndAddress(e.target.value); setEndCoords(null); }} autoComplete="off" />
+                    <TextField fullWidth label="Point d'arrivée" variant="outlined" value={endAddress} onChange={(e) => 
+                        { setEndAddress(e.target.value); setEndCoords(null); }} autoComplete="off" />
                     {endSuggestions.length > 0 && (
                         <Paper sx={{ position: 'absolute', width: '100%', zIndex: 1200, mt: 1 }}>
                             <List dense>
