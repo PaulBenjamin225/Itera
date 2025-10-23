@@ -97,12 +97,16 @@ function App() {
     };
 
     const clearMap = () => {
-        markers.current.forEach(marker => marker.remove());
-        markers.current = [];
-        if (map.current?.getLayer('route')) { map.current.removeLayer('route'); }
-        if (map.current?.getSource('route')) { map.current.removeSource('route'); }
-        setDistance(null);
-    };
+    markers.current.forEach(marker => marker.remove());
+    markers.current = [];
+    if (map.current?.getLayer('route')) { map.current.removeLayer('route'); }
+    if (map.current?.getSource('route')) { map.current.removeSource('route'); }
+    setDistance(null);
+    setStartAddress('');
+    setEndAddress('');
+    setStartCoords(null);
+    setEndCoords(null);
+};
 
     const handleCalculateRoute = async () => {
         if (!startCoords || !endCoords) {
