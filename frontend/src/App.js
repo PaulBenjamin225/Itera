@@ -7,12 +7,13 @@ import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import './App.css';
-import logo from './assets/Itera_logo.png';
 
 if (!process.env.REACT_APP_MAPBOX_TOKEN) {
     console.error("ERREUR CRITIQUE: La variable d'environnement REACT_APP_MAPBOX_TOKEN est manquante.");
 }
 mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN;
+
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 function useDebounce(value, delay) {
     const [debouncedValue, setDebouncedValue] = useState(value);
@@ -57,7 +58,8 @@ function App() {
         if (debouncedStartAddress.length > 2 && !startCoords) {
             const fetchSuggestions = async () => {
                 try {
-                    const response = await axios.post('http://localhost:5000/api/suggestions', { query: debouncedStartAddress });
+                    // Utilisation de l'URL dynamique
+                    const response = await axios.post(`${API_BASE_URL}/api/suggestions`, { query: debouncedStartAddress });
                     setStartSuggestions(response.data);
                 } catch { toast.error("Le service de suggestion est indisponible."); }
             };
@@ -71,7 +73,8 @@ function App() {
         if (debouncedEndAddress.length > 2 && !endCoords) {
             const fetchSuggestions = async () => {
                 try {
-                    const response = await axios.post('http://localhost:5000/api/suggestions', { query: debouncedEndAddress });
+                    // Utilisation de l'URL dynamique
+                    const response = await axios.post(`${API_BASE_URL}/api/suggestions`, { query: debouncedEndAddress });
                     setEndSuggestions(response.data);
                 } catch { toast.error("Le service de suggestion est indisponible."); }
             };
@@ -111,7 +114,8 @@ function App() {
         markers.current.push(new mapboxgl.Marker({ color: '#4caf50' }).setLngLat(startCoords).addTo(map.current));
         markers.current.push(new mapboxgl.Marker({ color: '#f44336' }).setLngLat(endCoords).addTo(map.current));
         try {
-            const routeResponse = await axios.post('http://localhost:5000/api/route', { start: startCoords, end: endCoords });
+            // Utilisation de l'URL dynamique
+            const routeResponse = await axios.post(`${API_BASE_URL}/api/route`, { start: startCoords, end: endCoords });
             const { distance: routeDistance, geometry } = routeResponse.data;
             setDistance(routeDistance);
             map.current.addLayer({
@@ -132,14 +136,13 @@ function App() {
         <Box sx={{ display: 'flex', height: '100vh', width: '100vw' }}>
             <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
             <Paper elevation={4} sx={{ width: 350, p: 2, zIndex: 1, display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto' }}>
-                {/* Le conteneur pour le titre */}
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Typography variant="h5" component="h1" sx={{ fontWeight: 'bold' }}>
                         <span style={{ color: '#0F5298' }}>Ite</span>
                         <span style={{ color: '#00D9A3' }}>ra</span>
                     </Typography>
-                    
                 </Box>
+                
                 <Box sx={{ position: 'relative' }}>
                     <TextField fullWidth label="Point de départ" variant="outlined" value={startAddress} onChange={(e) => { setStartAddress(e.target.value); setStartCoords(null); }} autoComplete="off" />
                     {startSuggestions.length > 0 && (
