@@ -26,6 +26,15 @@ app.use(express.json()); // Permet à Express de comprendre le JSON envoyé dans
 //          DÉFINITION DES ROUTES (API)
 // =============================================
 
+// --- CORRECTION : ROUTE HEALTH CHECK ---
+// Ajout d'une route à la racine GET /
+// C'est cette route que Render va appeler pour vérifier si le serveur est en vie.
+// Elle doit renvoyer une réponse avec un code de succès (200).
+app.get('/', (req, res) => {
+    res.status(200).json({ status: 'ok', message: 'API Itera est en ligne et prête.' });
+});
+
+
 /**
  * Route pour les suggestions d'autocomplétion.
  * Prend un texte partiel et renvoie une liste de villes correspondantes.
@@ -40,19 +49,16 @@ app.post('/api/suggestions', async (req, res) => {
         return res.status(400).json({ error: 'Une requête de recherche est requise.' });
     }
 
-    // `autocomplete=true` active le mode suggestion.
-    // `types=place` contraint la recherche aux villes, communes et villages pour plus de précision.
     const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${process.env.MAPBOX_API_KEY}&autocomplete=true&types=place`;
 
     try {
         const response = await axios.get(url);
         const features = response.data.features;
         
-        // On simplifie la réponse pour le frontend : on ne renvoie que l'essentiel.
         const suggestions = features.map(feature => ({
             id: feature.id,
             place_name: feature.place_name,
-            center: feature.center, // [longitude, latitude]
+            center: feature.center,
         }));
         
         res.json(suggestions);
@@ -86,7 +92,7 @@ app.post('/api/geocode', async (req, res) => {
 
         if (features && features.length > 0) {
             const firstResult = features[0];
-            const coordinates = firstResult.center; // Format : [longitude, latitude]
+            const coordinates = firstResult.center;
             res.json({ coordinates });
         } else {
             res.status(404).json({ error: `Lieu non trouvé pour "${location}".` });
