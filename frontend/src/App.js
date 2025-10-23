@@ -8,6 +8,9 @@ import 'react-toastify/dist/ReactToastify.css';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import './App.css';
 
+// MISE À JOUR : L'import du logo est restauré
+import logo from './assets/Itera_logo.png';
+
 if (!process.env.REACT_APP_MAPBOX_TOKEN) {
     console.error("ERREUR CRITIQUE: La variable d'environnement REACT_APP_MAPBOX_TOKEN est manquante.");
 }
@@ -58,7 +61,6 @@ function App() {
         if (debouncedStartAddress.length > 2 && !startCoords) {
             const fetchSuggestions = async () => {
                 try {
-                    // Utilisation de l'URL dynamique
                     const response = await axios.post(`${API_BASE_URL}/api/suggestions`, { query: debouncedStartAddress });
                     setStartSuggestions(response.data);
                 } catch { toast.error("Le service de suggestion est indisponible."); }
@@ -73,7 +75,6 @@ function App() {
         if (debouncedEndAddress.length > 2 && !endCoords) {
             const fetchSuggestions = async () => {
                 try {
-                    // Utilisation de l'URL dynamique
                     const response = await axios.post(`${API_BASE_URL}/api/suggestions`, { query: debouncedEndAddress });
                     setEndSuggestions(response.data);
                 } catch { toast.error("Le service de suggestion est indisponible."); }
@@ -96,17 +97,24 @@ function App() {
         }
     };
 
-    const clearMap = () => {
-    markers.current.forEach(marker => marker.remove());
-    markers.current = [];
-    if (map.current?.getLayer('route')) { map.current.removeLayer('route'); }
-    if (map.current?.getSource('route')) { map.current.removeSource('route'); }
-    setDistance(null);
-    setStartAddress('');
-    setEndAddress('');
-    setStartCoords(null);
-    setEndCoords(null);
-};
+    // MISE À JOUR : Logique de nettoyage séparée pour éviter les bugs
+    // Cette fonction ne nettoie QUE les éléments visuels de la carte
+    const clearMapElements = () => {
+        markers.current.forEach(marker => marker.remove());
+        markers.current = [];
+        if (map.current?.getLayer('route')) { map.current.removeLayer('route'); }
+        if (map.current?.getSource('route')) { map.current.removeSource('route'); }
+    };
+
+    // Cette fonction est pour le bouton "Réinitialiser" et nettoie TOUT
+    const handleReset = () => {
+        clearMapElements();
+        setDistance(null);
+        setStartAddress('');
+        setEndAddress('');
+        setStartCoords(null);
+        setEndCoords(null);
+    };
 
     const handleCalculateRoute = async () => {
         if (!startCoords || !endCoords) {
@@ -114,11 +122,11 @@ function App() {
             return;
         }
         setIsLoading(true);
-        clearMap();
+        // Appelle la fonction de nettoyage qui ne touche pas aux champs de texte
+        clearMapElements();
         markers.current.push(new mapboxgl.Marker({ color: '#4caf50' }).setLngLat(startCoords).addTo(map.current));
         markers.current.push(new mapboxgl.Marker({ color: '#f44336' }).setLngLat(endCoords).addTo(map.current));
         try {
-            // Utilisation de l'URL dynamique
             const routeResponse = await axios.post(`${API_BASE_URL}/api/route`, { start: startCoords, end: endCoords });
             const { distance: routeDistance, geometry } = routeResponse.data;
             setDistance(routeDistance);
@@ -140,11 +148,13 @@ function App() {
         <Box sx={{ display: 'flex', height: '100vh', width: '100vw' }}>
             <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
             <Paper elevation={4} sx={{ width: 350, p: 2, zIndex: 1, display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto' }}>
+                {/* MISE À JOUR : Le logo est restauré */}
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <Typography variant="h5" component="h1" sx={{ fontWeight: 'bold' }}>
                         <span style={{ color: '#0F5298' }}>Ite</span>
                         <span style={{ color: '#00D9A3' }}>ra</span>
                     </Typography>
+                    <img src={logo} alt="Logo Itera" style={{ height: '32px', width: 'auto' }} />
                 </Box>
                 
                 <Box sx={{ position: 'relative' }}>
@@ -181,7 +191,7 @@ function App() {
                     <Button variant="contained" onClick={handleCalculateRoute} disabled={isLoading} fullWidth sx={{ position: 'relative' }}>
                         {isLoading ? <CircularProgress size={24} sx={{ color: 'white' }} /> : "Calculer"}
                     </Button>
-                    <Button variant="outlined" onClick={clearMap} fullWidth>Réinitialiser</Button>
+                    <Button variant="outlined" onClick={handleReset} fullWidth>Réinitialiser</Button>
                 </Box>
                 {distance && (
                     <Paper variant="outlined" sx={{ p: 2, mt: 'auto', backgroundColor: '#f5f5f5' }}>
