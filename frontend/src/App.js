@@ -29,20 +29,24 @@ function useDebounce(value, delay) {
 
 // Composant principal de l'application
 function App() {
-    const mapContainer = useRef(null); // Référence au conteneur de la carte
-    const map = useRef(null); // Référence à l'instance de la carte
-    const markers = useRef([]); // Référence aux marqueurs sur la carte
-    const [isLoading, setIsLoading] = useState(false); // État de chargement pour le calcul de l'itinéraire
-    const [startAddress, setStartAddress] = useState(''); // Adresse de départ
-    const [endAddress, setEndAddress] = useState(''); // Adresse d'arrivée
-    const [startSuggestions, setStartSuggestions] = useState([]); // Suggestions pour le point de départ
-    const [endSuggestions, setEndSuggestions] = useState([]); // Suggestions pour le point d'arrivée
-    const [startCoords, setStartCoords] = useState(null); // Coordonnées du point de départ
-    const [endCoords, setEndCoords] = useState(null); // Coordonnées du point d'arrivée
-    const [distance, setDistance] = useState(null); // Distance calculée de l'itinéraire
+    const mapContainer = useRef(null);
+    const map = useRef(null);
+    const markers = useRef([]);
+    const [isLoading, setIsLoading] = useState(false);
+    const [startAddress, setStartAddress] = useState('');
+    const [endAddress, setEndAddress] = useState('');
+    const [startSuggestions, setStartSuggestions] = useState([]);
+    const [endSuggestions, setEndSuggestions] = useState([]);
+    const [startCoords, setStartCoords] = useState(null);
+    const [endCoords, setEndCoords] = useState(null);
+    const [distance, setDistance] = useState(null);
 
-    const debouncedStartAddress = useDebounce(startAddress, 300); // Debounce pour l'adresse de départ
-    const debouncedEndAddress = useDebounce(endAddress, 300); // Debounce pour l'adresse d'arrivée
+    // MISE À JOUR : Ajout des états pour suivre le focus des champs de texte
+    const [isStartFocused, setIsStartFocused] = useState(false);
+    const [isEndFocused, setIsEndFocused] = useState(false);
+
+    const debouncedStartAddress = useDebounce(startAddress, 300);
+    const debouncedEndAddress = useDebounce(endAddress, 300);
 
     // Initialisation de la carte Mapbox
     useEffect(() => {
@@ -54,8 +58,8 @@ function App() {
             center: [-4.0083, 5.35995],
             zoom: 5,
         });
-        const resizeObserver = new ResizeObserver(() => { if (map.current) map.current.resize(); }); // Assurer le redimensionnement de la carte
-        resizeObserver.observe(mapContainer.current); // Observer pour le redimensionnement
+        const resizeObserver = new ResizeObserver(() => { if (map.current) map.current.resize(); });
+        resizeObserver.observe(mapContainer.current);
         return () => resizeObserver.disconnect();
     }, []);
 
@@ -98,7 +102,7 @@ function App() {
         } else {
             setEndAddress(suggestion.place_name);
             setEndCoords(suggestion.center);
-            setStartSuggestions([]); // Correction : c'était probablement une faute de frappe, doit être endSuggestions
+            // MISE À JOUR : Correction d'une faute de frappe (copier-coller)
             setEndSuggestions([]);
         }
     };
@@ -111,7 +115,7 @@ function App() {
         if (map.current?.getSource('route')) { map.current.removeSource('route'); }
     };
 
-    // La fonction "Réinitialiser" nettoie TOUT, y compris les suggestions.
+    // La fonction "Réinitialiser" nettoie TOUT
     const handleReset = () => {
         clearMapElements();
         setDistance(null);
@@ -129,7 +133,7 @@ function App() {
             return;
         }
         setIsLoading(true);
-        clearMapElements(); // N'appelle que la fonction de nettoyage de la carte
+        clearMapElements();
         markers.current.push(new mapboxgl.Marker({ color: '#4caf50' }).setLngLat(startCoords).addTo(map.current));
         markers.current.push(new mapboxgl.Marker({ color: '#f44336' }).setLngLat(endCoords).addTo(map.current));
         try {
@@ -162,9 +166,19 @@ function App() {
                     <img src={logo} alt="Logo Itera" style={{ height: '32px', width: 'auto' }} />
                 </Box>
                 <Box sx={{ position: 'relative' }}>
-                    <TextField fullWidth label="Point de départ" variant="outlined" value={startAddress} onChange={(e) => 
-                        { setStartAddress(e.target.value); setStartCoords(null); }} autoComplete="off" />
-                    {startSuggestions.length > 0 && (
+                    <TextField
+                        fullWidth
+                        label="Point de départ"
+                        variant="outlined"
+                        value={startAddress}
+                        onChange={(e) => { setStartAddress(e.target.value); setStartCoords(null); }}
+                        autoComplete="off"
+                        
+                        onFocus={() => setIsStartFocused(true)}
+                        onBlur={() => setIsStartFocused(false)}
+                    />
+                    
+                    {startSuggestions.length > 0 && isStartFocused && (
                         <Paper sx={{ position: 'absolute', width: '100%', zIndex: 1200, mt: 1 }}>
                             <List dense>
                                 {startSuggestions.map((s) => (
@@ -178,9 +192,18 @@ function App() {
                     )}
                 </Box>
                 <Box sx={{ position: 'relative' }}>
-                    <TextField fullWidth label="Point d'arrivée" variant="outlined" value={endAddress} onChange={(e) => 
-                        { setEndAddress(e.target.value); setEndCoords(null); }} autoComplete="off" />
-                    {endSuggestions.length > 0 && (
+                    <TextField
+                        fullWidth
+                        label="Point d'arrivée"
+                        variant="outlined"
+                        value={endAddress}
+                        onChange={(e) => { setEndAddress(e.target.value); setEndCoords(null); }}
+                        autoComplete="off"
+                        
+                        onFocus={() => setIsEndFocused(true)}
+                        onBlur={() => setIsEndFocused(false)}
+                    />
+                    {endSuggestions.length > 0 && isEndFocused && (
                         <Paper sx={{ position: 'absolute', width: '100%', zIndex: 1200, mt: 1 }}>
                             <List dense>
                                 {endSuggestions.map((s) => (
