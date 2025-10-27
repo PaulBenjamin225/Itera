@@ -123,9 +123,7 @@ app.post('/api/route', async (req, res) => { // Route pour le calcul d'itinérai
     const [startLon, startLat] = start; // Déstructure les coordonnées de départ
     const [endLon, endLat] = end; // Déstructure les coordonnées d'arrivée
 
-    // Ajout de "&overview=full" pour demander à Mapbox une géométrie complète et détaillée.
-    // Cela garantit que le tracé suit parfaitement les routes et les virages.
-    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${startLon},${startLat};${endLon},${endLat}?geometries=geojson&overview=full&access_token=${process.env.MAPBOX_API_KEY}`;
+    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${startLon},${startLat};${endLon},${endLat}?geometries=geojson&access_token=${process.env.MAPBOX_API_KEY}`; // URL de l'API Mapbox pour le calcul d'itinéraire
 
     // Appel à l'API Mapbox pour obtenir l'itinéraire
     try {
