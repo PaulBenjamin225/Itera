@@ -1,23 +1,34 @@
 import React, { useRef, useEffect, useState } from 'react'; 
 import mapboxgl from 'mapbox-gl';
 import axios from 'axios';
-import { Box, TextField, Button, List, ListItemButton, ListItemText, Paper, Typography, CircularProgress, ListItemIcon } from '@mui/material';
+import { Box, TextField, Button, List, ListItemButton, ListItemText, Paper, Typography, CircularProgress, ListItemIcon, ToggleButtonGroup, ToggleButton, Tooltip } from '@mui/material';
 import PlaceIcon from '@mui/icons-material/Place';
+import MapIcon from '@mui/icons-material/Map';
+import SatelliteIcon from '@mui/icons-material/Satellite';
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import './App.css';
 import logo from './assets/Itera_logo.png';
 
-// Configuration de Mapbox
 if (!process.env.REACT_APP_MAPBOX_TOKEN) {
     console.error("ERREUR CRITIQUE: La variable d'environnement REACT_APP_MAPBOX_TOKEN est manquante.");
 }
 mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN; 
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000'; // URL de base de l'API backend
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
-// Hook personnalisé pour le debounce
+const mapStyles = [
+    { id: 'mapbox-streets', name: 'Rues', icon: <MapIcon />, style: 'mapbox://styles/mapbox/streets-v12' },
+    { id: 'mapbox-satellite', name: 'Satellite', icon: <SatelliteIcon />, style: 'mapbox://styles/mapbox/satellite-streets-v12' },
+    { id: 'osm-raster', name: 'OpenStreetMap', icon: <MapIcon />, style: {
+        'version': 8, 'sources': { 'osm-tiles': {
+            'type': 'raster', 'tiles': ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png', 'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png', 'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            'tileSize': 256, 'attribution': '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }}, 'layers': [{'id': 'osm-layer', 'type': 'raster', 'source': 'osm-tiles'}]
+    }}
+];
+
 function useDebounce(value, delay) {
     const [debouncedValue, setDebouncedValue] = useState(value);
     useEffect(() => {
@@ -27,7 +38,6 @@ function useDebounce(value, delay) {
     return debouncedValue;
 }
 
-// Composant principal de l'application
 function App() {
     const mapContainer = useRef(null);
     const map = useRef(null);
@@ -42,26 +52,60 @@ function App() {
     const [distance, setDistance] = useState(null);
     const [isStartFocused, setIsStartFocused] = useState(false); 
     const [isEndFocused, setIsEndFocused] = useState(false);
+    const [currentStyle, setCurrentStyle] = useState(mapStyles[0].id);
+    const [routeGeometry, setRouteGeometry] = useState(null);
 
     const debouncedStartAddress = useDebounce(startAddress, 300);
     const debouncedEndAddress = useDebounce(endAddress, 300);
 
-    // Initialisation de la carte Mapbox
+    const redrawMapElements = () => {
+        if (!map.current) return;
+        markers.current.forEach(marker => marker.remove());
+        markers.current = [];
+        if (startCoords) { markers.current.push(new mapboxgl.Marker({ color: '#4caf50' }).setLngLat(startCoords).addTo(map.current)); }
+        if (endCoords) { markers.current.push(new mapboxgl.Marker({ color: '#f44336' }).setLngLat(endCoords).addTo(map.current)); }
+        if (routeGeometry) {
+            if (map.current.getSource('route')) { map.current.getSource('route').setData(routeGeometry); }
+            else { map.current.addSource('route', { type: 'geojson', data: routeGeometry }); }
+            if (!map.current.getLayer('route')) {
+                map.current.addLayer({
+                    id: 'route', type: 'line', source: 'route',
+                    layout: { 'line-join': 'round', 'line-cap': 'round' },
+                    paint: { 'line-color': '#3887be', 'line-width': 5, 'line-opacity': 0.75 },
+                });
+            }
+        }
+    };
+    
     useEffect(() => {
         if (map.current) return; 
         if (!mapContainer.current) return;
         map.current = new mapboxgl.Map({
             container: mapContainer.current,
-            style: 'mapbox://styles/mapbox/streets-v12',
+            style: mapStyles.find(s => s.id === currentStyle).style,
             center: [-4.0083, 5.35995],
             zoom: 5,
         });
+        map.current.on('style.load', redrawMapElements);
         const resizeObserver = new ResizeObserver(() => { if (map.current) map.current.resize(); });
         resizeObserver.observe(mapContainer.current);
-        return () => resizeObserver.disconnect();
+        return () => {
+            if (map.current) {
+                map.current.remove();
+                map.current = null;
+            }
+            resizeObserver.disconnect();
+        };
     }, []);
 
-    // Récupération des suggestions d'adresses pour le départ
+    const handleStyleChange = (event, newStyleId) => {
+        if (newStyleId && newStyleId !== currentStyle) {
+            setCurrentStyle(newStyleId);
+            const selectedStyle = mapStyles.find(s => s.id === newStyleId);
+            map.current.setStyle(selectedStyle.style);
+        }
+    };
+    
     useEffect(() => {
         if (debouncedStartAddress.length > 2 && !startCoords) {
             const fetchSuggestions = async () => {
@@ -76,7 +120,6 @@ function App() {
         }
     }, [debouncedStartAddress, startCoords]);
 
-    // Récupération des suggestions d'adresses pour l'arrivée
     useEffect(() => {
         if (debouncedEndAddress.length > 2 && !endCoords) {
             const fetchSuggestions = async () => {
@@ -91,7 +134,6 @@ function App() {
         }
     }, [debouncedEndAddress, endCoords]);
 
-    // Gestion du clic sur une suggestion
     const handleSuggestionClick = (suggestion, type) => { 
         if (type === 'start') {
             setStartAddress(suggestion.place_name);
@@ -100,21 +142,19 @@ function App() {
         } else {
             setEndAddress(suggestion.place_name);
             setEndCoords(suggestion.center);
-            // --- CORRECTION ---
-            // On s'assure de ne vider que la bonne liste de suggestions
             setEndSuggestions([]);
         }
     };
 
-    // Nettoie uniquement les éléments visuels de la carte
     const clearMapElements = () => {
         markers.current.forEach(marker => marker.remove());
         markers.current = [];
-        if (map.current?.getLayer('route')) { map.current.removeLayer('route'); }
-        if (map.current?.getSource('route')) { map.current.removeSource('route'); }
+        if (map.current?.getSource('route')) {
+            if (map.current.getLayer('route')) map.current.removeLayer('route');
+            map.current.removeSource('route');
+        }
     };
 
-    // La fonction "Réinitialiser" nettoie TOUT
     const handleReset = () => {
         clearMapElements();
         setDistance(null);
@@ -122,13 +162,11 @@ function App() {
         setEndAddress('');
         setStartCoords(null);
         setEndCoords(null);
-        // --- CORRECTION ---
-        // On ajoute le nettoyage des listes de suggestions pour un reset complet et immédiat
         setStartSuggestions([]);
         setEndSuggestions([]);
+        setRouteGeometry(null);
     };
 
-    // Calcul de l'itinéraire entre les deux points
     const handleCalculateRoute = async () => {
         if (!startCoords || !endCoords) {
             toast.warn("Veuillez sélectionner un point de départ et d'arrivée depuis les suggestions.");
@@ -136,17 +174,13 @@ function App() {
         }
         setIsLoading(true);
         clearMapElements();
-        markers.current.push(new mapboxgl.Marker({ color: '#4caf50' }).setLngLat(startCoords).addTo(map.current));
-        markers.current.push(new mapboxgl.Marker({ color: '#f44336' }).setLngLat(endCoords).addTo(map.current));
+        setRouteGeometry(null);
         try {
             const routeResponse = await axios.post(`${API_BASE_URL}/api/route`, { start: startCoords, end: endCoords });
             const { distance: routeDistance, geometry } = routeResponse.data;
             setDistance(routeDistance);
-            map.current.addLayer({ 
-                id: 'route', type: 'line', source: { type: 'geojson', data: geometry },
-                layout: { 'line-join': 'round', 'line-cap': 'round' },
-                paint: { 'line-color': '#3887be', 'line-width': 5, 'line-opacity': 0.75 },
-            });
+            setRouteGeometry(geometry);
+            redrawMapElements();
             const bounds = new mapboxgl.LngLatBounds(startCoords, endCoords);
             map.current.fitBounds(bounds, { padding: { top: 50, bottom: 50, left: 370, right: 50 } });
         } catch (error) {
@@ -228,7 +262,21 @@ function App() {
                     </Paper>
                 )}
             </Paper>
-            <Box ref={mapContainer} sx={{ flex: 1, height: '100%' }} />
+
+            <Box sx={{ position: 'relative', flex: 1, height: '100%' }}>
+                <Box sx={{ position: 'absolute', top: 10, right: 10, zIndex: 1 }}>
+                    <Paper elevation={4}>
+                        <ToggleButtonGroup value={currentStyle} exclusive onChange={handleStyleChange} aria-label="sélecteur de style de carte">
+                            {mapStyles.map((style) => (
+                                <Tooltip title={style.name} key={style.id}>
+                                    <ToggleButton value={style.id} aria-label={style.name}>{style.icon}</ToggleButton>
+                                </Tooltip>
+                            ))}
+                        </ToggleButtonGroup>
+                    </Paper>
+                </Box>
+                <Box ref={mapContainer} sx={{ width: '100%', height: '100%' }} />
+            </Box>
         </Box>
     );
 }
