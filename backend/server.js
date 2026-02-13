@@ -3,153 +3,253 @@
 //      Application de Cartographie et Routage
 // =============================================
 
+require("dotenv").config();
 
-// --- Importation des dépendances ---
-require('dotenv').config(); // Pour charger les variables d'environnement depuis le fichier .env
-const express = require('express'); // Framework web pour Node.js
-const axios = require('axios');   // Client HTTP pour faire des requêtes (vers l'API Mapbox)
-const cors = require('cors');     // Middleware pour gérer les requêtes Cross-Origin (CORS)
+const express = require("express");
+const axios = require("axios");
+const cors = require("cors");
+const rateLimit = require("express-rate-limit");
+const https = require("https");
 
-
-// --- Initialisation de l'application Express ---
 const app = express();
-// Prêt pour le déploiement : utilise le port fourni par l'environnement ou 5000 en local
 const PORT = process.env.PORT || 5000;
 
+// ================================
+//          CONFIG GLOBALE
+// ================================
 
-// --- Middlewares ---
-app.use(cors()); // Autorise les requêtes provenant de notre frontend
-app.use(express.json()); // Permet à Express de comprendre le JSON envoyé dans le corps des requêtes
+// Keep-alive : améliore les performances des appels sortants vers Mapbox
+const httpsAgent = new https.Agent({ keepAlive: true });
 
+// Middlewares
+app.use(cors());
+app.use(express.json({ limit: "1mb" }));
 
-// =============================================
-//          DÉFINITION DES ROUTES (API)
-// =============================================
+// Rate limit pour éviter le spam (surtout sur /api/suggestions)
+const suggestionsLimiter = rateLimit({
+  windowMs: 10 * 1000, // 10s
+  max: 30, // 30 requêtes / 10s / IP
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use("/api/suggestions", suggestionsLimiter);
 
-// --- ROUTE HEALTH CHECK ---
-// Ajout d'une route à la racine GET /
-// C'est cette route que Render va appeler pour vérifier si le serveur est en vie.
-// Elle doit renvoyer une réponse avec un code de succès (200).
-app.get('/', (req, res) => {
-    res.status(200).json({ status: 'ok', message: 'API Itera est en ligne et prête.' });
+// Vérifie la présence de la clé API
+if (!process.env.MAPBOX_API_KEY) {
+  console.warn("⚠️ MAPBOX_API_KEY manquante dans le .env (ou variables Render).");
+}
+
+// ================================
+//            CACHE TTL
+// ================================
+// Cache simple en mémoire (OK pour un seul serveur).
+// Si tu scales sur plusieurs instances, il faut Redis.
+const SUGGEST_TTL_MS = 60_000; // 60 sec
+const suggestCache = new Map(); // key -> { exp, data }
+
+function cacheGet(key) {
+  const v = suggestCache.get(key);
+  if (!v) return null;
+  if (Date.now() > v.exp) {
+    suggestCache.delete(key);
+    return null;
+  }
+  return v.data;
+}
+
+function cacheSet(key, data) {
+  suggestCache.set(key, { exp: Date.now() + SUGGEST_TTL_MS, data });
+}
+
+// ================================
+//              ROUTES
+// ================================
+
+// Health check
+app.get("/", (req, res) => {
+  res.status(200).json({ status: "ok", message: "API Itera est en ligne et prête." });
 });
 
-
 /**
- * Route pour les suggestions d'autocomplétion.
- * Prend un texte partiel et renvoie une liste de villes correspondantes.
+ * Route suggestions d'autocomplétion (Mapbox Geocoding).
  * @route POST /api/suggestions
- * @body { "query": "Texte partiel tapé par l'utilisateur" }
+ * @body { "query": "abid", "proximity": [lon, lat] (optionnel) }
  * @returns { [{ id, place_name, center }] }
  */
-app.post('/api/suggestions', async (req, res) => { // Route pour les suggestions d'autocomplétion
-    const { query } = req.body; // Récupère le texte partiel depuis le corps de la requête
+app.post("/api/suggestions", async (req, res) => {
+  try {
+    let { query, proximity } = req.body;
 
-    if (!query) { // Vérifie que le texte partiel est fourni
-        return res.status(400).json({ error: 'Une requête de recherche est requise.' }); // Renvoie une erreur si non fourni
+    query = (query || "").trim();
+    if (query.length < 2) {
+      // Important : ne pas appeler Mapbox pour 0-1 caractère (trop lent / inutile)
+      return res.json([]);
     }
 
-    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${process.env.MAPBOX_API_KEY}&autocomplete=true&types=place`; // URL de l'API Mapbox pour les suggestions
+    // Proximity optionnel : si non fourni, valeur par défaut (Abidjan)
+    // NB: proximity = [lon, lat]
+    const defaultProximity = [-4.0083, 5.3097];
+    const prox =
+      Array.isArray(proximity) &&
+      proximity.length === 2 &&
+      Number.isFinite(proximity[0]) &&
+      Number.isFinite(proximity[1])
+        ? proximity
+        : defaultProximity;
 
-    try {
-        const response = await axios.get(url); // Appel à l'API Mapbox
-        const features = response.data.features; // Récupère les résultats
+    // Clé cache (query + prox arrondi)
+    const cacheKey = `${query.toLowerCase()}|${prox[0].toFixed(3)},${prox[1].toFixed(3)}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
 
-        // Formate les suggestions pour ne renvoyer que les informations nécessaires
-        const suggestions = features.map(feature => ({ // Map chaque résultat pour extraire les champs pertinents
-            id: feature.id, // Identifiant unique du lieu
-            place_name: feature.place_name, // Nom complet du lieu
-            center: feature.center, // Coordonnées [longitude, latitude]
-        }));
-        
-        res.json(suggestions); // Renvoie les suggestions au format JSON
+    // Paramètres qui accélèrent + améliorent la pertinence
+    // - limit : réduit taille réponse
+    // - language=fr : plus cohérent
+    // - country=CI : évite résultats mondiaux (tu peux enlever si tu veux mondial)
+    // - proximity : trie les résultats proches
+    const url =
+      `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json` +
+      `?access_token=${process.env.MAPBOX_API_KEY}` +
+      `&autocomplete=true` +
+      `&types=place` +
+      `&limit=7` +
+      `&language=fr` +
+      `&country=CI` +
+      `&proximity=${prox[0]},${prox[1]}`;
 
-    } catch (error) {
-        console.error("Erreur lors de l'appel à l'API de suggestion Mapbox:", error.message); // Log de l'erreur pour le débogage
-        res.status(500).json({ error: 'Erreur serveur lors de la recherche de suggestions.' }); // Renvoie une erreur serveur
+    const response = await axios.get(url, {
+      timeout: 6000,
+      httpsAgent,
+      validateStatus: () => true, // on gère nous-mêmes les statuts
+    });
+
+    if (response.status >= 400) {
+      console.error("Mapbox suggestions error:", response.status, response.data);
+      return res.status(502).json({ error: "Erreur côté Mapbox (suggestions)." });
     }
+
+    const features = response.data?.features || [];
+    const suggestions = features.map((f) => ({
+      id: f.id,
+      place_name: f.place_name,
+      center: f.center,
+    }));
+
+    cacheSet(cacheKey, suggestions);
+    return res.json(suggestions);
+  } catch (error) {
+    const isTimeout = error.code === "ECONNABORTED";
+    console.error("Erreur /api/suggestions:", isTimeout ? "timeout" : error.message);
+    return res.status(500).json({ error: "Erreur serveur lors de la recherche de suggestions." });
+  }
 });
 
-
 /**
- * Route pour le géocodage simple (gardée pour d'éventuels futurs besoins).
- * Convertit une adresse textuelle exacte en coordonnées géographiques.
+ * Route géocodage simple.
  * @route POST /api/geocode
- * @body { "location": "Nom de la ville ou de l'adresse" }
- * @returns { "coordinates": [longitude, latitude] } // Coordonnées géographiques
+ * @body { "location": "Abidjan" }
+ * @returns { "coordinates": [lon, lat] }
  */
-app.post('/api/geocode', async (req, res) => { // Route pour le géocodage simple
-    const { location } = req.body; // Récupère le nom du lieu depuis le corps de la requête
+app.post("/api/geocode", async (req, res) => {
+  try {
+    const location = (req.body?.location || "").trim();
+    if (!location) return res.status(400).json({ error: "Le nom du lieu est requis." });
 
-    if (!location) { // Vérifie que le nom du lieu est fourni
-        return res.status(400).json({ error: 'Le nom du lieu est requis.' }); // Renvoie une erreur si non fourni
+    const url =
+      `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(location)}.json` +
+      `?access_token=${process.env.MAPBOX_API_KEY}` +
+      `&limit=1` +
+      `&language=fr` +
+      `&country=CI`;
+
+    const response = await axios.get(url, {
+      timeout: 6000,
+      httpsAgent,
+      validateStatus: () => true,
+    });
+
+    if (response.status >= 400) {
+      console.error("Mapbox geocode error:", response.status, response.data);
+      return res.status(502).json({ error: "Erreur côté Mapbox (géocodage)." });
     }
 
-    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(location)}.json?access_token=${process.env.MAPBOX_API_KEY}&limit=1`; // URL de l'API Mapbox pour le géocodage
-
-    try {
-        const response = await axios.get(url); // Appel à l'API Mapbox
-        const features = response.data.features; // Récupère les résultats
-
-        if (features && features.length > 0) { // Vérifie qu'il y a au moins un résultat
-            const firstResult = features[0]; // Prend le premier résultat
-            const coordinates = firstResult.center; // Récupère les coordonnées [longitude, latitude]
-            res.json({ coordinates }); // Renvoie les coordonnées au format JSON
-        } else {
-            res.status(404).json({ error: `Lieu non trouvé pour "${location}".` }); // Renvoie une erreur si aucun lieu n'est trouvé
-        }
-
-    } catch (error) {
-        console.error("Erreur lors de l'appel à l'API de Géocodage Mapbox:", error.message); // Log de l'erreur pour le débogage
-        res.status(500).json({ error: 'Erreur serveur lors du géocodage.' }); // Renvoie une erreur serveur
+    const features = response.data?.features || [];
+    if (!features.length) {
+      return res.status(404).json({ error: `Lieu non trouvé pour "${location}".` });
     }
+
+    const coordinates = features[0].center;
+    return res.json({ coordinates });
+  } catch (error) {
+    const isTimeout = error.code === "ECONNABORTED";
+    console.error("Erreur /api/geocode:", isTimeout ? "timeout" : error.message);
+    return res.status(500).json({ error: "Erreur serveur lors du géocodage." });
+  }
 });
 
-
 /**
- * Route pour le calcul d'itinéraire.
- * Calcule la distance et le tracé entre deux coordonnées géographiques.
+ * Route calcul itinéraire (Mapbox Directions).
  * @route POST /api/route
  * @body { "start": [lon, lat], "end": [lon, lat] }
- * @returns { "distance": 12345, "geometry": { ... } } // Distance en mètres et géométrie GeoJSON de l'itinéraire
+ * @returns { "distance": meters, "geometry": geojson }
  */
-app.post('/api/route', async (req, res) => { // Route pour le calcul d'itinéraire
-    const { start, end } = req.body; // Récupère les coordonnées de départ et d'arrivée depuis le corps de la requête
+app.post("/api/route", async (req, res) => {
+  try {
+    const { start, end } = req.body || {};
 
-    if (!start || !end) { // Vérifie que les deux points sont fournis
-        return res.status(400).json({ error: "Les coordonnées de départ et d'arrivée sont requises." }); // Renvoie une erreur si non fourni
+    const validPoint = (p) =>
+      Array.isArray(p) &&
+      p.length === 2 &&
+      Number.isFinite(p[0]) &&
+      Number.isFinite(p[1]);
+
+    if (!validPoint(start) || !validPoint(end)) {
+      return res.status(400).json({
+        error: "Les coordonnées de départ et d'arrivée sont requises sous forme [lon, lat].",
+      });
     }
 
-    const [startLon, startLat] = start; // Déstructure les coordonnées de départ
-    const [endLon, endLat] = end; // Déstructure les coordonnées d'arrivée
+    const [startLon, startLat] = start;
+    const [endLon, endLat] = end;
 
-    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${startLon},${startLat};${endLon},${endLat}?geometries=geojson&access_token=${process.env.MAPBOX_API_KEY}`; // URL de l'API Mapbox pour le calcul d'itinéraire
+    const url =
+      `https://api.mapbox.com/directions/v5/mapbox/driving/${startLon},${startLat};${endLon},${endLat}` +
+      `?geometries=geojson` +
+      `&overview=full` +
+      `&access_token=${process.env.MAPBOX_API_KEY}`;
 
-    // Appel à l'API Mapbox pour obtenir l'itinéraire
-    try {
-        const response = await axios.get(url); // Appel à l'API Mapbox
-        const data = response.data; // Récupère les données de la réponse
+    const response = await axios.get(url, {
+      timeout: 8000,
+      httpsAgent,
+      validateStatus: () => true,
+    });
 
-        if (data.routes && data.routes.length > 0) { // Vérifie qu'il y a au moins un itinéraire
-            const route = data.routes[0]; // Prend le premier itinéraire
-            const routeGeometry = route.geometry; // Récupère la géométrie de l'itinéraire
-            const distance = route.distance; // Récupère la distance de l'itinéraire (en mètres)
-
-            res.json({ // Renvoie la distance et la géométrie au format JSON
-                distance: distance, // Distance en mètres
-                geometry: routeGeometry // Géométrie GeoJSON de l'itinéraire
-            });
-        } else {
-            res.status(404).json({ error: 'Aucun itinéraire trouvé entre les points spécifiés.' }); // Renvoie une erreur si aucun itinéraire n'est trouvé
-        }
-    } catch (error) {
-        console.error("Erreur lors de l'appel à l'API de Routage Mapbox:", error.message); // Log de l'erreur pour le débogage
-        res.status(500).json({ error: "Erreur serveur lors du calcul de l'itinéraire." }); // Renvoie une erreur serveur
+    if (response.status >= 400) {
+      console.error("Mapbox route error:", response.status, response.data);
+      return res.status(502).json({ error: "Erreur côté Mapbox (routage)." });
     }
+
+    const data = response.data;
+    if (!data?.routes?.length) {
+      return res.status(404).json({ error: "Aucun itinéraire trouvé entre les points spécifiés." });
+    }
+
+    const route = data.routes[0];
+    return res.json({
+      distance: route.distance, // mètres
+      geometry: route.geometry, // GeoJSON
+      duration: route.duration, // secondes (bonus)
+    });
+  } catch (error) {
+    const isTimeout = error.code === "ECONNABORTED";
+    console.error("Erreur /api/route:", isTimeout ? "timeout" : error.message);
+    return res.status(500).json({ error: "Erreur serveur lors du calcul de l'itinéraire." });
+  }
 });
 
-
-// --- Démarrage du serveur ---
+// ================================
+//           DÉMARRAGE
+// ================================
 app.listen(PORT, () => {
-    console.log(`✅ Le serveur est démarré et écoute sur le port ${PORT}`); // Message de confirmation au démarrage
+  console.log(`✅ Le serveur est démarré et écoute sur le port ${PORT}`);
 });
