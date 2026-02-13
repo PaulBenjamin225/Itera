@@ -86,12 +86,9 @@ function App() {
   const map = useRef(null);
   const markers = useRef([]);
 
-  // Abort controllers pour annuler les requêtes suggestions
+  // Abort controllers suggestions
   const startReqController = useRef(null);
   const endReqController = useRef(null);
-
-  // Pour éviter de programmer 50 redraws quand le style n’est pas prêt
-  const redrawScheduled = useRef(false);
 
   const [isLoading, setIsLoading] = useState(false);
 
@@ -109,79 +106,45 @@ function App() {
 
   const [currentStyle, setCurrentStyle] = useState(mapStyles[0].id);
 
-  // routeFeature (Feature GeoJSON)
-  const [routeFeature, setRouteFeature] = useState(null);
-
   const debouncedStartAddress = useDebounce(startAddress, 300);
   const debouncedEndAddress = useDebounce(endAddress, 300);
 
   // ==========================
-  //  MAP SAFE REDRAW
+  //  ROUTE LAYER (CREATE ONCE)
   // ==========================
-  const redrawMapElements = useCallback(() => {
+  const ensureRouteLayer = useCallback(() => {
     if (!map.current) return;
 
-    // ✅ FIX: si le style n’est pas chargé, on attend "idle" puis on redessine
-    if (!map.current.isStyleLoaded()) {
-      if (redrawScheduled.current) return;
-      redrawScheduled.current = true;
-      map.current.once("idle", () => {
-        redrawScheduled.current = false;
-        redrawMapElements(); // relance quand prêt
+    // Source
+    if (!map.current.getSource("route")) {
+      map.current.addSource("route", {
+        type: "geojson",
+        data: {
+          type: "Feature",
+          properties: {},
+          geometry: { type: "LineString", coordinates: [] },
+        },
       });
-      return;
     }
 
-    // Markers
-    markers.current.forEach((m) => m.remove());
-    markers.current = [];
-
-    if (startCoords) {
-      markers.current.push(
-        new mapboxgl.Marker({ color: "#4caf50" })
-          .setLngLat(startCoords)
-          .addTo(map.current)
-      );
+    // Layer
+    if (!map.current.getLayer("route")) {
+      map.current.addLayer({
+        id: "route",
+        type: "line",
+        source: "route",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": "#3887be",
+          "line-width": 5,
+          "line-opacity": 0.75,
+        },
+      });
     }
-    if (endCoords) {
-      markers.current.push(
-        new mapboxgl.Marker({ color: "#f44336" })
-          .setLngLat(endCoords)
-          .addTo(map.current)
-      );
-    }
-
-    // Route
-    if (routeFeature) {
-      if (map.current.getSource("route")) {
-        map.current.getSource("route").setData(routeFeature);
-      } else {
-        map.current.addSource("route", { type: "geojson", data: routeFeature });
-      }
-
-      if (!map.current.getLayer("route")) {
-        map.current.addLayer({
-          id: "route",
-          type: "line",
-          source: "route",
-          layout: { "line-join": "round", "line-cap": "round" },
-          paint: {
-            "line-color": "#3887be",
-            "line-width": 5,
-            "line-opacity": 0.75,
-          },
-        });
-      }
-    }
-  }, [startCoords, endCoords, routeFeature]);
-
-  // Redessiner automatiquement après chaque update coords/route
-  useEffect(() => {
-    redrawMapElements();
-  }, [redrawMapElements]);
+  }, []);
 
   // ==========================
-  //  INIT MAP ONCE
+  //  MAP INIT
   // ==========================
   useEffect(() => {
     if (map.current) return;
@@ -194,8 +157,18 @@ function App() {
       zoom: 5,
     });
 
-    // Quand on change de style, sources/couches sautent => redraw après style load
-    map.current.on("style.load", redrawMapElements);
+    // Debug utile si Mapbox refuse addLayer/addSource
+    map.current.on("error", (e) => console.log("MAPBOX ERROR:", e?.error || e));
+
+    // "load" une seule fois au début
+    map.current.on("load", () => {
+      ensureRouteLayer();
+    });
+
+    // Après changement de style, Mapbox supprime sources/couches => recréer
+    map.current.on("style.load", () => {
+      ensureRouteLayer();
+    });
 
     const resizeObserver = new ResizeObserver(() => {
       if (map.current) map.current.resize();
@@ -215,7 +188,7 @@ function App() {
       resizeObserver.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [ensureRouteLayer]);
 
   const handleStyleChange = (event, newStyleId) => {
     if (!newStyleId || newStyleId === currentStyle) return;
@@ -224,11 +197,12 @@ function App() {
     const selectedStyle = mapStyles.find((s) => s.id === newStyleId);
     if (map.current && selectedStyle) {
       map.current.setStyle(selectedStyle.style);
+      // ensureRouteLayer() sera rappelé par style.load
     }
   };
 
   // ==========================
-  //  SUGGESTIONS - START
+  //  SUGGESTIONS START
   // ==========================
   useEffect(() => {
     const q = (debouncedStartAddress || "").trim();
@@ -271,7 +245,7 @@ function App() {
   }, [debouncedStartAddress, startCoords, isStartFocused]);
 
   // ==========================
-  //  SUGGESTIONS - END
+  //  SUGGESTIONS END
   // ==========================
   useEffect(() => {
     const q = (debouncedEndAddress || "").trim();
@@ -334,12 +308,18 @@ function App() {
   //  CLEAR / RESET
   // ==========================
   const clearMapElements = () => {
+    // markers
     markers.current.forEach((m) => m.remove());
     markers.current = [];
 
-    if (map.current?.getSource("route")) {
-      if (map.current.getLayer("route")) map.current.removeLayer("route");
-      map.current.removeSource("route");
+    // ✅ NE PAS supprimer la source/layer: on vide juste la route
+    const src = map.current?.getSource("route");
+    if (src) {
+      src.setData({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: [] },
+      });
     }
   };
 
@@ -352,23 +332,46 @@ function App() {
     setEndCoords(null);
     setStartSuggestions([]);
     setEndSuggestions([]);
-    setRouteFeature(null);
   };
+
+  // ==========================
+  //  DRAW helpers
+  // ==========================
+  const drawMarkers = useCallback(() => {
+    if (!map.current) return;
+
+    markers.current.forEach((m) => m.remove());
+    markers.current = [];
+
+    if (startCoords) {
+      markers.current.push(
+        new mapboxgl.Marker({ color: "#4caf50" }).setLngLat(startCoords).addTo(map.current)
+      );
+    }
+    if (endCoords) {
+      markers.current.push(
+        new mapboxgl.Marker({ color: "#f44336" }).setLngLat(endCoords).addTo(map.current)
+      );
+    }
+  }, [startCoords, endCoords]);
+
+  // redessiner markers quand coords changent
+  useEffect(() => {
+    drawMarkers();
+  }, [drawMarkers]);
 
   // ==========================
   //  CALCULATE ROUTE
   // ==========================
   const handleCalculateRoute = async () => {
     if (!startCoords || !endCoords) {
-      toast.warn(
-        "Veuillez sélectionner un point de départ et d'arrivée depuis les suggestions."
-      );
+      toast.warn("Veuillez sélectionner un point de départ et d'arrivée depuis les suggestions.");
       return;
     }
 
     setIsLoading(true);
     clearMapElements();
-    setRouteFeature(null);
+    ensureRouteLayer(); // sécurité
 
     try {
       const routeResponse = await axios.post(
@@ -377,27 +380,22 @@ function App() {
         { timeout: 10000 }
       );
 
+      // backend actuel renvoie {distance, geometry, duration}
       const { distance: routeDistance, geometry } = routeResponse.data;
 
       setDistance(routeDistance);
 
-      // ✅ Feature GeoJSON
-      setRouteFeature({
-        type: "Feature",
-        properties: {},
-        geometry,
-      });
+      // ✅ on push directement dans la source route (pas de setState obligatoire)
+      const feature = { type: "Feature", properties: {}, geometry };
 
-      // Fit bounds (OK même si style pas chargé)
+      const src = map.current?.getSource("route");
+      if (src) src.setData(feature);
+
+      // Fit bounds
       const bounds = new mapboxgl.LngLatBounds(startCoords, endCoords);
       map.current.fitBounds(bounds, {
         padding: { top: 50, bottom: 50, left: 370, right: 50 },
       });
-
-      // ✅ Optionnel: force un redraw après idle (au cas où)
-      if (map.current && !map.current.isStyleLoaded()) {
-        map.current.once("idle", redrawMapElements);
-      }
     } catch (error) {
       console.error("Erreur itinéraire:", error?.message || error);
       toast.error("Impossible de calculer l'itinéraire.");
@@ -406,9 +404,6 @@ function App() {
     }
   };
 
-  // ==========================
-  //  UI
-  // ==========================
   return (
     <Box sx={{ display: "flex", height: "100vh", width: "100vw" }}>
       <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
@@ -433,7 +428,6 @@ function App() {
           <img src={logo} alt="Logo Itera" style={{ height: "32px", width: "auto" }} />
         </Box>
 
-        {/* START INPUT */}
         <Box sx={{ position: "relative" }}>
           <TextField
             fullWidth
@@ -468,7 +462,6 @@ function App() {
           )}
         </Box>
 
-        {/* END INPUT */}
         <Box sx={{ position: "relative" }}>
           <TextField
             fullWidth
@@ -528,7 +521,6 @@ function App() {
         )}
       </Paper>
 
-      {/* MAP */}
       <Box sx={{ position: "relative", flex: 1, height: "100%" }}>
         <Box sx={{ position: "absolute", top: 10, right: 10, zIndex: 1 }}>
           <Paper elevation={4}>

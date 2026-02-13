@@ -42,8 +42,6 @@ if (!process.env.MAPBOX_API_KEY) {
 // ================================
 //            CACHE TTL
 // ================================
-// Cache simple en mémoire (OK pour un seul serveur).
-// Si tu scales sur plusieurs instances, il faut Redis.
 const SUGGEST_TTL_MS = 60_000; // 60 sec
 const suggestCache = new Map(); // key -> { exp, data }
 
@@ -67,7 +65,10 @@ function cacheSet(key, data) {
 
 // Health check
 app.get("/", (req, res) => {
-  res.status(200).json({ status: "ok", message: "API Itera est en ligne et prête." });
+  res.status(200).json({
+    status: "ok",
+    message: "API Itera est en ligne et prête.",
+  });
 });
 
 /**
@@ -82,12 +83,10 @@ app.post("/api/suggestions", async (req, res) => {
 
     query = (query || "").trim();
     if (query.length < 2) {
-      // Important : ne pas appeler Mapbox pour 0-1 caractère (trop lent / inutile)
       return res.json([]);
     }
 
     // Proximity optionnel : si non fourni, valeur par défaut (Abidjan)
-    // NB: proximity = [lon, lat]
     const defaultProximity = [-4.0083, 5.3097];
     const prox =
       Array.isArray(proximity) &&
@@ -97,16 +96,12 @@ app.post("/api/suggestions", async (req, res) => {
         ? proximity
         : defaultProximity;
 
-    // Clé cache (query + prox arrondi)
+    // Cache key
     const cacheKey = `${query.toLowerCase()}|${prox[0].toFixed(3)},${prox[1].toFixed(3)}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    // Paramètres qui accélèrent + améliorent la pertinence
-    // - limit : réduit taille réponse
-    // - language=fr : plus cohérent
-    // - country=CI : évite résultats mondiaux (tu peux enlever si tu veux mondial)
-    // - proximity : trie les résultats proches
+    // URL Mapbox (optimisée)
     const url =
       `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json` +
       `?access_token=${process.env.MAPBOX_API_KEY}` +
@@ -120,7 +115,7 @@ app.post("/api/suggestions", async (req, res) => {
     const response = await axios.get(url, {
       timeout: 6000,
       httpsAgent,
-      validateStatus: () => true, // on gère nous-mêmes les statuts
+      validateStatus: () => true,
     });
 
     if (response.status >= 400) {
@@ -140,7 +135,9 @@ app.post("/api/suggestions", async (req, res) => {
   } catch (error) {
     const isTimeout = error.code === "ECONNABORTED";
     console.error("Erreur /api/suggestions:", isTimeout ? "timeout" : error.message);
-    return res.status(500).json({ error: "Erreur serveur lors de la recherche de suggestions." });
+    return res.status(500).json({
+      error: "Erreur serveur lors de la recherche de suggestions.",
+    });
   }
 });
 
@@ -191,7 +188,12 @@ app.post("/api/geocode", async (req, res) => {
  * Route calcul itinéraire (Mapbox Directions).
  * @route POST /api/route
  * @body { "start": [lon, lat], "end": [lon, lat] }
- * @returns { "distance": meters, "geometry": geojson }
+ *
+ * @returns {
+ *  distance: number,
+ *  duration: number,
+ *  feature: GeoJSONFeature(LineString)
+ * }
  */
 app.post("/api/route", async (req, res) => {
   try {
@@ -231,19 +233,34 @@ app.post("/api/route", async (req, res) => {
 
     const data = response.data;
     if (!data?.routes?.length) {
-      return res.status(404).json({ error: "Aucun itinéraire trouvé entre les points spécifiés." });
+      return res.status(404).json({
+        error: "Aucun itinéraire trouvé entre les points spécifiés.",
+      });
     }
 
     const route = data.routes[0];
+
+    // Feature GeoJSON directement utilisable côté frontend
+    const feature = {
+      type: "Feature",
+      properties: {
+        distance: route.distance,
+        duration: route.duration,
+      },
+      geometry: route.geometry,
+    };
+
     return res.json({
       distance: route.distance, // mètres
-      geometry: route.geometry, // GeoJSON
-      duration: route.duration, // secondes (bonus)
+      duration: route.duration, // secondes
+      feature, // GeoJSON Feature(LineString)
     });
   } catch (error) {
     const isTimeout = error.code === "ECONNABORTED";
     console.error("Erreur /api/route:", isTimeout ? "timeout" : error.message);
-    return res.status(500).json({ error: "Erreur serveur lors du calcul de l'itinéraire." });
+    return res.status(500).json({
+      error: "Erreur serveur lors du calcul de l'itinéraire.",
+    });
   }
 });
 
