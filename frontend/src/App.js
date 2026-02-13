@@ -33,11 +33,8 @@ if (!process.env.REACT_APP_MAPBOX_TOKEN) {
 mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN;
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
+const DEFAULT_PROXIMITY = [-4.0083, 5.3097]; // Abidjan [lon, lat]
 
-// Proximité par défaut (Abidjan) : améliore les suggestions si ton backend l’utilise
-const DEFAULT_PROXIMITY = [-4.0083, 5.3097]; // [lon, lat]
-
-// Styles de cartes
 const mapStyles = [
   {
     id: "mapbox-streets",
@@ -75,7 +72,6 @@ const mapStyles = [
   },
 ];
 
-// Debounce hook
 function useDebounce(value, delay) {
   const [debouncedValue, setDebouncedValue] = useState(value);
   useEffect(() => {
@@ -90,9 +86,12 @@ function App() {
   const map = useRef(null);
   const markers = useRef([]);
 
-  // IMPORTANT : on garde une référence à la requête en cours pour pouvoir l’annuler
+  // Abort controllers pour annuler les requêtes suggestions
   const startReqController = useRef(null);
   const endReqController = useRef(null);
+
+  // Pour éviter de programmer 50 redraws quand le style n’est pas prêt
+  const redrawScheduled = useRef(false);
 
   const [isLoading, setIsLoading] = useState(false);
 
@@ -104,26 +103,39 @@ function App() {
   const [endCoords, setEndCoords] = useState(null);
 
   const [distance, setDistance] = useState(null);
+
   const [isStartFocused, setIsStartFocused] = useState(false);
   const [isEndFocused, setIsEndFocused] = useState(false);
 
   const [currentStyle, setCurrentStyle] = useState(mapStyles[0].id);
-  const [routeFeature, setRouteFeature] = useState(null); // GeoJSON Feature (line)
+
+  // routeFeature (Feature GeoJSON)
+  const [routeFeature, setRouteFeature] = useState(null);
 
   const debouncedStartAddress = useDebounce(startAddress, 300);
   const debouncedEndAddress = useDebounce(endAddress, 300);
 
   // ==========================
-  //  MAP RENDER / REDRAW
+  //  MAP SAFE REDRAW
   // ==========================
   const redrawMapElements = useCallback(() => {
     if (!map.current) return;
 
-    // Clear markers
+    // ✅ FIX: si le style n’est pas chargé, on attend "idle" puis on redessine
+    if (!map.current.isStyleLoaded()) {
+      if (redrawScheduled.current) return;
+      redrawScheduled.current = true;
+      map.current.once("idle", () => {
+        redrawScheduled.current = false;
+        redrawMapElements(); // relance quand prêt
+      });
+      return;
+    }
+
+    // Markers
     markers.current.forEach((m) => m.remove());
     markers.current = [];
 
-    // Add markers
     if (startCoords) {
       markers.current.push(
         new mapboxgl.Marker({ color: "#4caf50" })
@@ -139,7 +151,7 @@ function App() {
       );
     }
 
-    // Add/Update route
+    // Route
     if (routeFeature) {
       if (map.current.getSource("route")) {
         map.current.getSource("route").setData(routeFeature);
@@ -163,6 +175,14 @@ function App() {
     }
   }, [startCoords, endCoords, routeFeature]);
 
+  // Redessiner automatiquement après chaque update coords/route
+  useEffect(() => {
+    redrawMapElements();
+  }, [redrawMapElements]);
+
+  // ==========================
+  //  INIT MAP ONCE
+  // ==========================
   useEffect(() => {
     if (map.current) return;
     if (!mapContainer.current) return;
@@ -174,6 +194,7 @@ function App() {
       zoom: 5,
     });
 
+    // Quand on change de style, sources/couches sautent => redraw après style load
     map.current.on("style.load", redrawMapElements);
 
     const resizeObserver = new ResizeObserver(() => {
@@ -182,7 +203,6 @@ function App() {
     resizeObserver.observe(mapContainer.current);
 
     return () => {
-      // abort pending requests
       try {
         startReqController.current?.abort();
         endReqController.current?.abort();
@@ -199,33 +219,30 @@ function App() {
 
   const handleStyleChange = (event, newStyleId) => {
     if (!newStyleId || newStyleId === currentStyle) return;
+
     setCurrentStyle(newStyleId);
     const selectedStyle = mapStyles.find((s) => s.id === newStyleId);
     if (map.current && selectedStyle) {
       map.current.setStyle(selectedStyle.style);
-      // redraw will happen on style.load
     }
   };
 
   // ==========================
-  //  SUGGESTIONS (START)
+  //  SUGGESTIONS - START
   // ==========================
   useEffect(() => {
     const q = (debouncedStartAddress || "").trim();
 
-    // Si l’utilisateur a déjà sélectionné une suggestion (coords), on ne fetch pas
     if (startCoords) {
       setStartSuggestions([]);
       return;
     }
 
-    // Seuil: 2 caractères suffisent
     if (q.length < 2 || !isStartFocused) {
       setStartSuggestions([]);
       return;
     }
 
-    // Annule la requête précédente
     if (startReqController.current) startReqController.current.abort();
     startReqController.current = new AbortController();
 
@@ -234,17 +251,11 @@ function App() {
         const response = await axios.post(
           `${API_BASE_URL}/api/suggestions`,
           { query: q, proximity: DEFAULT_PROXIMITY },
-          {
-            signal: startReqController.current.signal,
-            timeout: 6000,
-          }
+          { signal: startReqController.current.signal, timeout: 6000 }
         );
         setStartSuggestions(Array.isArray(response.data) ? response.data : []);
       } catch (err) {
-        // Si c’est une annulation, on ignore
         if (err?.name === "CanceledError" || err?.code === "ERR_CANCELED") return;
-
-        // Pas de toast à chaque frappe (trop agressif)
         console.error("Suggestions départ indisponibles:", err?.message || err);
         setStartSuggestions([]);
       }
@@ -253,7 +264,6 @@ function App() {
     fetchSuggestions();
 
     return () => {
-      // Cleanup si l’effet se relance
       try {
         startReqController.current?.abort();
       } catch {}
@@ -261,7 +271,7 @@ function App() {
   }, [debouncedStartAddress, startCoords, isStartFocused]);
 
   // ==========================
-  //  SUGGESTIONS (END)
+  //  SUGGESTIONS - END
   // ==========================
   useEffect(() => {
     const q = (debouncedEndAddress || "").trim();
@@ -284,10 +294,7 @@ function App() {
         const response = await axios.post(
           `${API_BASE_URL}/api/suggestions`,
           { query: q, proximity: DEFAULT_PROXIMITY },
-          {
-            signal: endReqController.current.signal,
-            timeout: 6000,
-          }
+          { signal: endReqController.current.signal, timeout: 6000 }
         );
         setEndSuggestions(Array.isArray(response.data) ? response.data : []);
       } catch (err) {
@@ -372,26 +379,25 @@ function App() {
 
       const { distance: routeDistance, geometry } = routeResponse.data;
 
-      // Mapbox source attend un Feature ou FeatureCollection
-      const feature = {
+      setDistance(routeDistance);
+
+      // ✅ Feature GeoJSON
+      setRouteFeature({
         type: "Feature",
         properties: {},
-        geometry, // geometry = { type: 'LineString', coordinates: [...] }
-      };
+        geometry,
+      });
 
-      setDistance(routeDistance);
-      setRouteFeature(feature);
-
-      // Redraw markers + route
-      // (redrawMapElements dépend de routeFeature => il va aussi se faire au prochain render,
-      // mais on peut forcer un redraw immédiat si map est prête)
-      setTimeout(() => redrawMapElements(), 0);
-
-      // Fit bounds
+      // Fit bounds (OK même si style pas chargé)
       const bounds = new mapboxgl.LngLatBounds(startCoords, endCoords);
       map.current.fitBounds(bounds, {
         padding: { top: 50, bottom: 50, left: 370, right: 50 },
       });
+
+      // ✅ Optionnel: force un redraw après idle (au cas où)
+      if (map.current && !map.current.isStyleLoaded()) {
+        map.current.once("idle", redrawMapElements);
+      }
     } catch (error) {
       console.error("Erreur itinéraire:", error?.message || error);
       toast.error("Impossible de calculer l'itinéraire.");
@@ -427,7 +433,7 @@ function App() {
           <img src={logo} alt="Logo Itera" style={{ height: "32px", width: "auto" }} />
         </Box>
 
-        {/* START */}
+        {/* START INPUT */}
         <Box sx={{ position: "relative" }}>
           <TextField
             fullWidth
@@ -462,7 +468,7 @@ function App() {
           )}
         </Box>
 
-        {/* END */}
+        {/* END INPUT */}
         <Box sx={{ position: "relative" }}>
           <TextField
             fullWidth
@@ -504,6 +510,7 @@ function App() {
           >
             {isLoading ? <CircularProgress size={24} sx={{ color: "white" }} /> : "Calculer"}
           </Button>
+
           <Button variant="outlined" onClick={handleReset} fullWidth>
             Réinitialiser
           </Button>
